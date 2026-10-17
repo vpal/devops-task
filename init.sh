@@ -5,6 +5,9 @@ if [ ! -f justfile ]; then
     return 1
 fi
 
+# Update the platform checksums when changing this pinned version.
+init_just_version=1.59.0
+
 # Select the official binary for Linux or either Mac architecture.
 case "$(uname -s)-$(uname -m)" in
     Linux-x86_64)
@@ -25,28 +28,37 @@ case "$(uname -s)-$(uname -m)" in
         ;;
 esac
 
-if [ ! -x .tools/bin/just ] || [ "$(.tools/bin/just --version)" != 'just 1.59.0' ]; then
-    # Pin and verify the upstream binary before extracting it.
-    mkdir -p .tools/bin &&
+if [ ! -x .tools/bin/just ] || [ "$(.tools/bin/just --version)" != "just ${init_just_version}" ]; then
+    # Use a subshell so cleanup traps do not change the shell sourcing this file.
+    (
+        mkdir -p .tools/downloads || exit 1
+        init_download_dir=$(mktemp -d .tools/downloads/just.XXXXXX) || exit 1
+        trap 'rm -rf "${init_download_dir}"; rmdir .tools/downloads 2>/dev/null || true' EXIT
+        trap 'exit 1' HUP INT TERM
+
+        # Verify the archive before extracting it; discard downloads on exit.
         curl --fail --silent --show-error --location \
-            "https://github.com/casey/just/releases/download/1.59.0/just-1.59.0-${init_just_target}.tar.gz" \
-            --output .tools/just.tar.gz &&
-        printf '%s  %s\n' "$init_just_checksum" '.tools/just.tar.gz' > .tools/just.sha256 || return 1
+            "https://github.com/casey/just/releases/download/${init_just_version}/just-${init_just_version}-${init_just_target}.tar.gz" \
+            --output "${init_download_dir}/just.tar.gz" || exit 1
+        printf '%s  %s\n' "${init_just_checksum}" "${init_download_dir}/just.tar.gz" \
+            > "${init_download_dir}/just.sha256" || exit 1
 
-    # macOS provides shasum; Linux commonly provides sha256sum.
-    if command -v sha256sum >/dev/null 2>&1; then
-        sha256sum --check .tools/just.sha256 || return 1
-    else
-        shasum -a 256 --check .tools/just.sha256 || return 1
-    fi
+        # macOS provides shasum; Linux commonly provides sha256sum.
+        if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum --check "${init_download_dir}/just.sha256" || exit 1
+        else
+            shasum -a 256 --check "${init_download_dir}/just.sha256" || exit 1
+        fi
 
-    tar -xzf .tools/just.tar.gz -C .tools/bin just || return 1
+        mkdir -p .tools/bin || exit 1
+        tar -xzf "${init_download_dir}/just.tar.gz" -C .tools/bin just || exit 1
+    ) || return 1
 fi
 
-unset init_just_target init_just_checksum
+unset init_just_version init_just_target init_just_checksum
 
 # Do not duplicate the entry when this file is sourced again.
-case ":$PATH:" in
-    *":$PWD/.tools/bin:"*) ;;
-    *) export PATH="$PWD/.tools/bin:$PATH" ;;
+case ":${PATH}:" in
+    *":${PWD}/.tools/bin:"*) ;;
+    *) export PATH="${PWD}/.tools/bin:${PATH}" ;;
 esac
