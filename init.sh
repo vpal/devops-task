@@ -62,3 +62,18 @@ case ":${PATH}:" in
     *":${PWD}/.tools/bin:"*) ;;
     *) export PATH="${PWD}/.tools/bin:${PATH}" ;;
 esac
+
+# Load the pinned tool's native completions only for interactive shells.
+case "${-}" in
+    *i*)
+        if [ -n "${ZSH_VERSION:-}" ]; then
+            if ! command -v compdef >/dev/null 2>&1; then
+                # Skip insecure completion directories and avoid a persistent cache.
+                autoload -Uz compinit && compinit -i -D || return 1
+            fi
+            eval "$(just --completions zsh)"
+        elif [ -n "${BASH_VERSION:-}" ]; then
+            eval "$(just --completions bash)"
+        fi
+        ;;
+esac
