@@ -21,3 +21,39 @@ See all open jobs at https://careers.formlabs.com/
 
 - Explain as much as possible in the commit message(s) and/or comments if needed. See more on commit messages [here](https://chris.beams.io/posts/git-commit/).
 - It would be great if you'd also write about why you choose a certain technology if there are alternatives to consider.
+
+## Local development
+
+The bootstrap supports Linux x86_64 and macOS (Intel or Apple Silicon). Local
+development requires Python 3.14 with `venv` and pip, Bash or Zsh, `curl`, `tar`,
+and either `sha256sum` or `shasum`.
+
+From the repository root:
+
+```bash
+source ./init.sh
+just build
+just test
+just run
+```
+
+Source `init.sh` in each new Bash or Zsh shell to make `just` available.
+
+`just run` and `just test` automatically set up `.venv` and update it when
+requirements change; `just build` is optional.
+
+The app runs at <http://127.0.0.1:8080> with code reload. Stop with Ctrl+C;
+restart `just run` after changing requirements.
+
+## Build the local Docker image
+
+With Docker installed and running, use the same shell:
+
+```bash
+just image
+```
+
+This builds `helloapp:local` and replaces that tag after a successful build.
+Docker detects changed source files or requirements, rebuilds affected layers,
+and reuses unchanged layers. The build also checks for a refreshed base image.
+The Docker build does not require the local `.venv`.
