@@ -1,0 +1,14 @@
+replicaCount: 1
+
+image:
+  repository: helloapp
+  tag: local
+
+# Local defaults for two Gunicorn workers; tune for the actual workload.
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 256Mi

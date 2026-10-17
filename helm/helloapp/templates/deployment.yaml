@@ -1,0 +1,66 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name | quote }}
+  labels:
+    app.kubernetes.io/name: {{ .Chart.Name | quote }}
+    app.kubernetes.io/instance: {{ .Release.Name | quote }}
+    app.kubernetes.io/managed-by: {{ .Release.Service | quote }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  # Keep the existing selector stable across chart upgrades.
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name | quote }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ .Chart.Name | quote }}
+        app.kubernetes.io/instance: {{ .Release.Name | quote }}
+        app.kubernetes.io/managed-by: {{ .Release.Service | quote }}
+    spec:
+      # The application does not use the Kubernetes API.
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: helloapp
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          # Kind uses the image loaded from Docker without a registry.
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          ports:
+            - name: http
+              containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+          # Allow startup time and repeated failures before restarting the app.
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 10
+            timeoutSeconds: 2
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        # Gunicorn needs writable heartbeat files despite the read-only root.
+        # Memory-backed temporary files count toward the container memory limit.
+        - name: tmp
+          emptyDir:
+            medium: Memory
+            sizeLimit: 16Mi

@@ -37,7 +37,8 @@ just test
 just run
 ```
 
-Source `init.sh` in each new Bash or Zsh shell to make `just` available.
+Source `init.sh` in each new Bash or Zsh shell to enable `just` and Tab completion.
+Use `just --list` to list recipes.
 
 `just run` and `just test` automatically set up `.venv` and update it when
 requirements change; `just build` is optional.
@@ -57,3 +58,35 @@ This builds `helloapp:local` and replaces that tag after a successful build.
 Docker detects changed source files or requirements, rebuilds affected layers,
 and reuses unchanged layers. The build also checks for a refreshed base image.
 The Docker build does not require the local `.venv`.
+
+## Local Kubernetes deployment
+
+With Docker running, use Bash or Zsh from the repository root:
+
+```bash
+source ./init.sh
+just k8s-deploy
+just k8s-verify
+just k8s-access
+```
+
+`just k8s-deploy` installs the tools, builds the image, and deploys to local Kind.
+Run it again after changes. `just k8s-verify` checks the app through its Service.
+
+`just k8s-access` forwards <http://127.0.0.1:8080> to the app; stop with Ctrl+C.
+Stop `just run` first if it is using port 8080.
+
+After deployment, set `KUBECONFIG` from the repository root in each new shell:
+
+```bash
+export KUBECONFIG="${PWD}/.kind-kubeconfig"
+kubectl get nodes
+kubectl -n helloapp get pods,svc
+kubectl -n helloapp logs deployment/helloapp
+```
+
+Set replicas and resource requests/limits in `helm/helloapp/values.yaml`.
+Use `just k8s-redeploy` to discard manual release edits and restore chart values;
+this can interrupt the app. Then run `just k8s-verify`.
+
+Clean up with `just k8s-cluster-delete`.
