@@ -1,0 +1,311 @@
+name: CI
+
+on:
+  push:
+    branches: ['**']
+    tags: ['v*']
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    # One Docker host keeps tests, scanning, and deployment on the same build.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: sh
+    env:
+      KUBECONFIG: ${{ github.workspace }}/.kind-kubeconfig
+      KIND_EXPERIMENTAL_PROVIDER: docker
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Load shared automation settings
+        # automation.env contains plain KEY=value entries and full-line comments.
+        run: sed '/^#/d; /^$/d' automation.env >> "${GITHUB_ENV}"
+
+      # Prefer project-maintained actions for readability; match local tool versions.
+      - name: Set up Ruff
+        uses: astral-sh/ruff-action@278981a28ce3188b1e39527901f38254bf3aac89 # v4.1.0
+        with:
+          version: ${{ env.RUFF_VERSION }}
+          # Override the action's default lint command; checks run separately below.
+          args: --version
+
+      - name: Lint Python
+        id: lint
+        # Check code issues such as unused imports and undefined names.
+        run: ruff check --no-cache --output-format=github helloapp
+
+      - name: Check Python formatting
+        id: format
+        # Report formatting changes without rewriting files.
+        run: ruff format --check --no-cache helloapp
+
+      - name: Set up Just
+        # Third-party installer listed in Just's own GitHub Actions documentation.
+        uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4.0.0
+        with:
+          just-version: ${{ env.JUST_VERSION }}
+
+      - name: Check justfile and render shell recipes
+        id: justfile
+        run: |
+          set -eu
+          just --fmt --check
+          mkdir -p .tools/checks
+          recipes=$(just --summary)
+          # Dry-run renders commands without executing recipes or their dependencies.
+          # Separate subshells keep recipe variables and exit statements independent.
+          for recipe in ${recipes}; do
+              body=$(just --dry-run --no-deps "${recipe}" 2>&1)
+              if [ -n "${body}" ]; then
+                  printf '\n# Recipe: %s\n(\n%s\n)\n' "${recipe}" "${body}"
+              fi
+          done > .tools/checks/just-recipes.sh
+
+      - name: Lint recipe shell code
+        id: recipes
+        uses:
+          docker://koalaman/shellcheck:v0.11.0@sha256:61862eba1fcf09a484ebcc6feea46f1782532571a34ed51fedf90dd25f925a8d
+        with:
+          args: --shell=sh .tools/checks/just-recipes.sh
+
+      # Container actions mount the workspace automatically; no wrapper is needed.
+      # uses requires literal image references; keep these pins aligned with automation.env.
+      - name: Check shell scripts
+        id: shell
+        uses:
+          docker://koalaman/shellcheck:v0.11.0@sha256:61862eba1fcf09a484ebcc6feea46f1782532571a34ed51fedf90dd25f925a8d
+        with:
+          args: --shell=bash init.sh
+
+      - name: Validate workflow
+        id: workflow
+        # The image includes ShellCheck for inline workflow shell commands.
+        # Future: type checking, broader SAST, and Docker/Kubernetes policies.
+        uses: docker://rhysd/actionlint:1.7.12@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667
+        with:
+          args: .github/workflows/ci.yml
+
+      - name: Set up Helm
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: v${{ env.HELM_VERSION }}
+
+      - name: Validate chart
+        id: chart
+        run: helm lint helm/helloapp
+
+      - name: Record source and validate version tag
+        run: |
+          set -eu
+          printf 'SOURCE_SHA=%s\n' "$(git rev-parse HEAD)" >> "${GITHUB_ENV}"
+          # Reject invalid version names instead of silently sanitizing them.
+          if [ "${GITHUB_REF_TYPE}" = tag ]; then
+              if ! printf '%s\n' "${GITHUB_REF_NAME}" | LC_ALL=C grep -Eq '^v[0-9][A-Za-z0-9_.-]{0,126}$'; then
+                  printf '%s\n' 'Use a Docker-compatible version tag, for example v1.0.0 or v1.0.0-rc.1.' >&2
+                  exit 1
+              fi
+          fi
+
+      - name: Generate image tags and labels
+        id: metadata
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          context: git
+          images: helloapp
+          flavor: latest=false
+          tags: |
+            type=raw,value=sha-${{ env.SOURCE_SHA }}
+            type=ref,event=tag
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Build application image
+        id: build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          pull: true
+          load: true
+          push: false
+          tags: ${{ steps.metadata.outputs.tags }}
+          labels: ${{ steps.metadata.outputs.labels }}
+          # Reuse build layers across fresh runners; tests and scans still run every time.
+          cache-from: type=gha,scope=helloapp
+          cache-to: type=gha,scope=helloapp,mode=max
+
+      - name: Record built image
+        env:
+          IMAGE_TAG: ${{ steps.metadata.outputs.version }}
+        run: |
+          set -eu
+          printf 'IMAGE_TAG=%s\n' "${IMAGE_TAG}" >> "${GITHUB_ENV}"
+          mkdir -p .tools/reports
+          image_id=$(docker image inspect --format '{{.Id}}' "helloapp:${IMAGE_TAG}")
+          printf 'source=%s\nimage=helloapp:%s\nimage_id=%s\n' \
+              "${SOURCE_SHA}" "${IMAGE_TAG}" "${image_id}" > .tools/reports/image.txt
+
+      - name: Run unit tests in the image
+        id: tests
+        run: docker run --rm "helloapp:${IMAGE_TAG}" python -m unittest -v helloapp.test
+
+      - name: Write complete vulnerability report
+        id: report
+        # On the disposable runner, scan the image already loaded into Docker.
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          version: v${{ env.TRIVY_VERSION }}
+          image-ref: helloapp:${{ env.IMAGE_TAG }}
+          scanners: vuln
+          timeout: 5m
+          # The action caches this directory by default, not the whole .tools directory.
+          cache-dir: .tools/trivy-cache
+          format: json
+          output: .tools/reports/trivy.json
+          list-all-pkgs: true
+          exit-code: '0'
+
+      - name: Block fixable high and critical vulnerabilities
+        id: scan
+        # Reuse the installed binary and report's database without restoring a cache.
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        env:
+          TRIVY_SKIP_DB_UPDATE: 'true'
+        with:
+          skip-setup-trivy: true
+          cache: false
+          image-ref: helloapp:${{ env.IMAGE_TAG }}
+          scanners: vuln
+          timeout: 5m
+          cache-dir: .tools/trivy-cache
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: '1'
+
+      - name: Create test cluster
+        id: cluster
+        # The action installs Kind/kubectl and deletes the cluster in its post step.
+        uses: helm/kind-action@1544676c07bb3570fcb70166beaa07c4528fd4aa # v1.15.1
+        with:
+          version: v${{ env.KIND_VERSION }}
+          kubectl_version: v${{ env.KUBECTL_VERSION }}
+          node_image: ${{ env.KIND_NODE_IMAGE }}
+          cluster_name: devops-task-ci
+          kubeconfig: ${{ env.KUBECONFIG }}
+          wait: 120s
+
+      - name: Deploy the tested image
+        id: deploy
+        run: |
+          set -eu
+          kind load docker-image "helloapp:${IMAGE_TAG}" --name devops-task-ci
+          helm upgrade --install helloapp helm/helloapp \
+              --namespace helloapp --create-namespace \
+              --set-string "image.tag=${IMAGE_TAG}" --wait --timeout 2m
+
+      - name: Verify HTTP through the Service
+        id: verify
+        run: |
+          kubectl -n helloapp run helloapp-check \
+              --image="helloapp:${IMAGE_TAG}" --image-pull-policy=Never \
+              --overrides='{"spec":{"automountServiceAccountToken":false}}' \
+              --restart=Never --rm -i --pod-running-timeout=120s \
+              --command -- python -c '
+          import urllib.request
+
+          response = urllib.request.urlopen("http://helloapp/", timeout=10)
+          assert response.status == 200
+          assert response.read() == b"<p>Hello, World!</p>"
+          print("HTTP 200: Hello, World!")
+          '
+
+      - name: Collect deployment failure diagnostics
+        if: >-
+          ${{ failure() &&
+          (steps.cluster.outcome == 'failure' ||
+          steps.deploy.outcome == 'failure' ||
+          steps.verify.outcome == 'failure') }}
+        timeout-minutes: 2
+        run: |
+          mkdir -p .tools/reports
+          # Missing resources are expected during failure diagnosis.
+          {
+              kubectl --request-timeout=10s get nodes -o wide || true
+              kubectl --request-timeout=10s -n helloapp get pods,deploy,svc -o wide || true
+              kubectl --request-timeout=10s -n helloapp describe pods || true
+              kubectl --request-timeout=10s -n helloapp get events --sort-by=.lastTimestamp || true
+              kubectl --request-timeout=10s -n helloapp logs deployment/helloapp --all-containers --tail=100 || true
+          } > .tools/reports/k8s-diagnostics.txt 2>&1
+          cat .tools/reports/k8s-diagnostics.txt
+
+      - name: Upload available reports
+        if: ${{ always() && steps.build.outcome == 'success' }}
+        timeout-minutes: 2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ci-reports-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            .tools/reports/image.txt
+            .tools/reports/trivy.json
+            .tools/reports/k8s-diagnostics.txt
+          # Allow only these files from the hidden directory, never kubeconfig.
+          include-hidden-files: true
+          retention-days: 7
+
+      - name: Summarize results
+        if: ${{ always() }}
+        env:
+          LINT: ${{ steps.lint.outcome }}
+          FORMAT: ${{ steps.format.outcome }}
+          JUSTFILE: ${{ steps.justfile.outcome }}
+          RECIPES: ${{ steps.recipes.outcome }}
+          SHELL_RESULT: ${{ steps.shell.outcome }}
+          WORKFLOW: ${{ steps.workflow.outcome }}
+          CHART: ${{ steps.chart.outcome }}
+          TESTS: ${{ steps.tests.outcome }}
+          REPORT: ${{ steps.report.outcome }}
+          SCAN: ${{ steps.scan.outcome }}
+          CLUSTER: ${{ steps.cluster.outcome }}
+          DEPLOY: ${{ steps.deploy.outcome }}
+          HTTP: ${{ steps.verify.outcome }}
+        run: |
+          {
+              printf 'Commit: %s\n\nImage: helloapp:%s\n\n' \
+                  "${SOURCE_SHA:-unavailable}" "${IMAGE_TAG:-unavailable}"
+              printf '| Check | Outcome |\n| --- | --- |\n'
+              printf '| %s | %s |\n' \
+                  'Python lint' "${LINT}" \
+                  'Formatting' "${FORMAT}" \
+                  'Justfile' "${JUSTFILE}" \
+                  'Recipe shell' "${RECIPES}" \
+                  'Shell' "${SHELL_RESULT}" \
+                  'Workflow' "${WORKFLOW}" \
+                  'Chart' "${CHART}" \
+                  'Unit tests' "${TESTS}" \
+                  'Scan report' "${REPORT}" \
+                  'Vulnerability gate' "${SCAN}" \
+                  'Cluster' "${CLUSTER}" \
+                  'Deployment' "${DEPLOY}" \
+                  'HTTP' "${HTTP}"
+              if [ -f .tools/reports/image.txt ]; then
+                  printf '\n~~~text\n'
+                  cat .tools/reports/image.txt
+                  printf '~~~\n'
+              fi
+              printf '\nCluster cleanup runs in the Kind action post step, after reporting.\n'
+          } >> "${GITHUB_STEP_SUMMARY}"

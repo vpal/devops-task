@@ -90,3 +90,30 @@ Use `just k8s-redeploy` to discard manual release edits and restore chart values
 this can interrupt the app. Then run `just k8s-verify`.
 
 Clean up with `just k8s-cluster-delete`.
+
+## Local CI checks
+
+With Docker running, source `init.sh` and run:
+
+```bash
+just ci-check
+just image-check
+```
+
+`just image-check` builds the image, runs its unit tests, and scans it.
+Tool versions are pinned in `automation.env` and match CI.
+`just ci-check` also checks justfile syntax, formatting, and recipe shell code;
+use `just lint-just` to run only those checks.
+The scan report is saved to `.tools/reports/trivy.json`; fixable high or critical
+vulnerabilities fail the scan. After it passes, use `just k8s-apply k8s-verify`
+to deploy and check that image.
+
+## CI
+
+GitHub Actions runs on every branch push, `v*` tag, and pull request to `master`.
+Open [Actions](https://github.com/vpal/devops-task/actions) to view checks and
+download the `ci-reports-*` artifact containing image details, the scan report,
+and deployment diagnostics when available.
+
+Each run tests and scans the built image before deploying it to a temporary
+Kind cluster and checking HTTP. The cluster is removed after the job.
