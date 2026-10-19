@@ -1,0 +1,4 @@
+apiVersion: v2
+name: helloapp
+description: A minimal Helm chart for the homework application.
+version: 0.1.0

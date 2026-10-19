@@ -137,5 +137,8 @@ dmypy.json
 # Cython debug symbols
 cython_debug/
 
-# Virualenv
-.venv
+# Downloaded local tools
+.tools/
+
+# Local Kind cluster credentials
+.kind-kubeconfig

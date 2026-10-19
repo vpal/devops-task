@@ -1,5 +1,7 @@
-from helloapp.app import hello_world
 import unittest
+
+from helloapp.app import hello_world
+
 
 class TestHello(unittest.TestCase):
     def test_hello(self):

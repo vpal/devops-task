@@ -1,0 +1,5 @@
+.git
+.venv
+.tools
+.kind-kubeconfig
+**/__pycache__
