@@ -104,8 +104,9 @@ just image-check
 Tool versions are pinned in `automation.env` and match CI.
 `just ci-check` also checks justfile syntax, formatting, and recipe shell code;
 use `just lint-just` to run only those checks.
-The scan report is saved to `.tools/reports/trivy.json`; fixable high or critical
-vulnerabilities fail the scan. After it passes, use `just k8s-apply k8s-verify`
+The full scan report is saved to `.tools/reports/trivy.json`. CRITICAL
+vulnerabilities fail the scan, including those without a fix; review lower
+severities in the report. After it passes, use `just k8s-apply k8s-verify`
 to deploy and check that image.
 
 ## CI

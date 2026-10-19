@@ -180,9 +180,10 @@ jobs:
           list-all-pkgs: true
           exit-code: '0'
 
-      - name: Block fixable high and critical vulnerabilities
+      - name: Block critical vulnerabilities
         id: scan
         # Reuse the installed binary and report's database without restoring a cache.
+        # Include unfixed CRITICAL findings; lower severities remain in the full report.
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         env:
           TRIVY_SKIP_DB_UPDATE: 'true'
@@ -193,8 +194,7 @@ jobs:
           scanners: vuln
           timeout: 5m
           cache-dir: .tools/trivy-cache
-          severity: HIGH,CRITICAL
-          ignore-unfixed: true
+          severity: CRITICAL
           exit-code: '1'
 
       - name: Create test cluster

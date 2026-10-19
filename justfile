@@ -58,13 +58,13 @@ image-scan:
         "${TRIVY_IMAGE}" image "helloapp:${IMAGE_TAG}" \
         --scanners vuln --cache-dir /cache --timeout 5m \
         --list-all-pkgs --format json > .tools/reports/trivy.json
-    # Use the report's database; keep unfixed findings in the report, outside the gate.
+    # Reuse the report's database; block CRITICAL findings even without a fix.
     docker run --rm \
         --volume /var/run/docker.sock:/var/run/docker.sock \
         --volume devops-task-trivy-cache:/cache \
         "${TRIVY_IMAGE}" image "helloapp:${IMAGE_TAG}" \
         --scanners vuln --cache-dir /cache --timeout 5m \
-        --skip-db-update --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1
+        --skip-db-update --severity CRITICAL --exit-code 1
 
 # Match CI's tool versions and checks, including the justfile and its shell recipes.
 # Local containers avoid installing Ruff/Trivy; CI uses their project actions.
