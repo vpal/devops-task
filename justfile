@@ -5,6 +5,9 @@
 set dotenv-path := "automation.env"
 set dotenv-override
 
+# Prefer the repository's pinned tools in every recipe, including from subdirectories.
+export PATH := (justfile_directory() / ".tools/bin") + ":" + env("PATH")
+
 # Kind, kubectl, and Helm use this file and its current context.
 export KUBECONFIG := justfile_directory() / ".kind-kubeconfig"
 # Use the same container backend as the image build.
@@ -74,12 +77,12 @@ ci-check: lint-python lint-just lint-shell lint-workflow k8s-chart-check
 lint-just:
     #!/usr/bin/env sh
     set -eu
-    .tools/bin/just --fmt --check
+    just --fmt --check
     mkdir -p .tools/checks
-    recipes=$(.tools/bin/just --summary)
+    recipes=$(just --summary)
     # Separate subshells keep recipe variables and exit statements independent.
     for recipe in ${recipes}; do
-        body=$(.tools/bin/just --dry-run --no-deps "${recipe}" 2>&1)
+        body=$(just --dry-run --no-deps "${recipe}" 2>&1)
         if [ -n "${body}" ]; then
             printf '\n# Recipe: %s\n(\n%s\n)\n' "${recipe}" "${body}"
         fi
@@ -164,15 +167,15 @@ k8s-install-tools:
     printf '%s\n' "${versions}" > .tools/k8s-versions
 
 k8s-chart-check: k8s-install-tools
-    .tools/bin/helm lint helm/helloapp
+    helm lint helm/helloapp
 
 k8s-cluster-create: k8s-install-tools
     #!/usr/bin/env sh
     set -eu
-    if .tools/bin/kind get clusters | grep -Fxq devops-task; then
-        .tools/bin/kind export kubeconfig --name devops-task
+    if kind get clusters | grep -Fxq devops-task; then
+        kind export kubeconfig --name devops-task
     else
-        .tools/bin/kind create cluster --name devops-task \
+        kind create cluster --name devops-task \
             --image "${KIND_NODE_IMAGE}" --wait 120s
     fi
 
@@ -183,43 +186,43 @@ k8s-deploy: image k8s-apply
 k8s-apply: k8s-chart-check k8s-cluster-create
     #!/usr/bin/env sh
     set -eu
-    .tools/bin/kind load docker-image "helloapp:${IMAGE_TAG}" --name devops-task
+    kind load docker-image "helloapp:${IMAGE_TAG}" --name devops-task
     # Restore server-side apply after a forced redeploy and keep conflict checks.
-    .tools/bin/helm upgrade --install helloapp helm/helloapp \
+    helm upgrade --install helloapp helm/helloapp \
         --namespace helloapp \
         --set-string "image.tag=${IMAGE_TAG}" \
         --create-namespace --server-side=true --wait --timeout 2m
     # The local tag is reused, so restart Pods to pick up a rebuilt image.
-    .tools/bin/kubectl -n helloapp rollout restart deployment/helloapp
-    .tools/bin/kubectl -n helloapp rollout status deployment/helloapp --timeout=120s
+    kubectl -n helloapp rollout restart deployment/helloapp
+    kubectl -n helloapp rollout status deployment/helloapp --timeout=120s
 
 # Reset the release's resources and values to the chart, discarding manual edits.
 k8s-redeploy: image k8s-chart-check k8s-cluster-create
     #!/usr/bin/env sh
     set -eu
-    .tools/bin/kind load docker-image "helloapp:${IMAGE_TAG}" --name devops-task
+    kind load docker-image "helloapp:${IMAGE_TAG}" --name devops-task
     # Helm 4 requires client-side updates for replacement instead of merging.
-    .tools/bin/helm upgrade --install helloapp helm/helloapp \
+    helm upgrade --install helloapp helm/helloapp \
         --namespace helloapp \
         --set-string "image.tag=${IMAGE_TAG}" \
         --create-namespace --reset-values --server-side=false --force-replace \
         --wait --timeout 2m
     # Restart even when the local image tag and Pod template are unchanged.
-    .tools/bin/kubectl -n helloapp rollout restart deployment/helloapp
-    .tools/bin/kubectl -n helloapp rollout status deployment/helloapp --timeout=120s
+    kubectl -n helloapp rollout restart deployment/helloapp
+    kubectl -n helloapp rollout status deployment/helloapp --timeout=120s
 
 # Check Service routing using Python from the application image.
 k8s-verify: k8s-install-tools
     #!/usr/bin/env sh
     set -eu
     # Check the current deployment; setup belongs to k8s-deploy.
-    clusters=$(.tools/bin/kind get clusters)
+    clusters=$(kind get clusters)
     if ! printf '%s\n' "${clusters}" | grep -Fxq devops-task; then
         printf '%s\n' 'Cluster devops-task is missing. Run just k8s-deploy first.' >&2
         exit 1
     fi
     # This temporary client also has no need for Kubernetes API credentials.
-    .tools/bin/kubectl -n helloapp run helloapp-check \
+    kubectl -n helloapp run helloapp-check \
         --image="helloapp:${IMAGE_TAG}" --image-pull-policy=Never \
         --overrides='{"spec":{"automountServiceAccountToken":false}}' \
         --restart=Never --rm -i --pod-running-timeout=120s \
@@ -233,7 +236,7 @@ k8s-verify: k8s-install-tools
     '
 
 k8s-access: k8s-install-tools
-    exec .tools/bin/kubectl -n helloapp port-forward service/helloapp 8080:80
+    exec kubectl -n helloapp port-forward service/helloapp 8080:80
 
 # Collect what exists after a failed deployment, before cleanup removes evidence.
 k8s-diagnostics:
@@ -242,11 +245,11 @@ k8s-diagnostics:
     mkdir -p .tools/reports
     # Missing/unready resources are expected here; each API request is bounded.
     {
-        .tools/bin/kubectl --request-timeout=10s get nodes -o wide || true
-        .tools/bin/kubectl --request-timeout=10s -n helloapp get pods,deploy,svc -o wide || true
-        .tools/bin/kubectl --request-timeout=10s -n helloapp describe pods || true
-        .tools/bin/kubectl --request-timeout=10s -n helloapp get events --sort-by=.lastTimestamp || true
-        .tools/bin/kubectl --request-timeout=10s -n helloapp logs deployment/helloapp \
+        kubectl --request-timeout=10s get nodes -o wide || true
+        kubectl --request-timeout=10s -n helloapp get pods,deploy,svc -o wide || true
+        kubectl --request-timeout=10s -n helloapp describe pods || true
+        kubectl --request-timeout=10s -n helloapp get events --sort-by=.lastTimestamp || true
+        kubectl --request-timeout=10s -n helloapp logs deployment/helloapp \
             --all-containers --tail=100 || true
     } > .tools/reports/k8s-diagnostics.txt 2>&1
     cat .tools/reports/k8s-diagnostics.txt
@@ -255,5 +258,5 @@ k8s-diagnostics:
 k8s-cluster-delete: k8s-install-tools
     #!/usr/bin/env sh
     set -eu
-    .tools/bin/kind delete cluster --name devops-task
+    kind delete cluster --name devops-task
     rm -f "${KUBECONFIG}"
